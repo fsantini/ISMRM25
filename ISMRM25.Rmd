@@ -1,0 +1,424 @@
+---
+title: "ISMRM25"
+author: "Francesco Santini"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load('tidyverse', 'gridExtra', 'ggplot2', 'patchwork', 'dplyr', 'tidyr')
+
+set.seed(123)
+```
+
+## Distributions
+
+```{r distributions}
+# R script to create violin plots of two normal distributions
+# Parameters can be adjusted as needed
+
+# Set the sample size (user-definable variable)
+sample_size <- 1000  # Change this value to adjust the number of samples
+
+# Generate normally distributed data
+group_a <- rnorm(n = sample_size, mean = 1000, sd = 50)
+group_b <- rnorm(n = sample_size, mean = 1005, sd = 50)
+
+# Combine data for plotting
+data <- data.frame(
+  value = c(group_a, group_b),
+  group = factor(rep(c("Measurement 1", "Measurement 2"), each = sample_size))
+)
+
+# Create violin plots
+plot <- ggplot(data, aes(x = group, y = value, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red") +
+  scale_fill_manual(values = c("dodgerblue", "firebrick")) +
+  labs(
+    title = paste("Violin Plots (n =", sample_size, ")"),
+    x = "Group",
+    y = "Value",
+    fill = "Distribution"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+t.test(group_a, group_b)
+mean(group_a)
+mean(group_b)
+
+plot
+```
+
+## The p-value
+
+
+```{r p_value_vis}
+
+## Parameters
+
+value <- 1.5
+
+##
+
+
+# Create normal distribution data
+x <- seq(-4, 4, length.out = 1000)
+y <- dnorm(x)
+
+# Create data frame for plotting
+df <- data.frame(x = x, y = y)
+
+p_value <- (1-pnorm(value))
+
+# Create the plot
+ggplot(df, aes(x = x, y = y)) +
+  geom_line() +
+  geom_area(data = subset(df, x >= value), fill = "red", alpha = 0.3) +
+  labs(x = "Test Statistic", y = "Density",
+       title = paste("Normal Distribution with the p-value for",
+                     value, "represented as area (p=", round(p_value, 3), ")")) +
+  theme_minimal()
+```
+
+# Confidence intervals
+
+The t-distribution can be used to calculate *confidence intervals* for our means. A X% confidence interval comes from a procedure that, if repeated many times with different random samples, would contain the true population mean X% of the time. When talking about means, we can use the t-distribution to build a confidence interval in the following way:
+
+$$CI(X\%) = \bar x \pm t(X\%) \cdot (\hat\sigma/\sqrt n)$$
+where $t(X\%)$ is the critical value that corresponds to the desired confidence percentage. In formulas:
+
+```{r confidence interval}
+
+## Parameters
+
+population_mean <- 4
+population_sd <- 1
+sample_size <- 10
+confidence <- 0.95
+
+##
+
+standard_error <- population_sd / sqrt(sample_size)
+
+confidence_onesided <- 1 - (1-confidence)/2
+t_crit <- qt(confidence_onesided, df=sample_size-1)
+
+# Create data frame for plotting
+x <- seq(population_mean - 4*standard_error, population_mean + 4*standard_error, length.out = 1000)
+y <- dt((x - population_mean) / standard_error, df=sample_size-1)
+
+ci_min <- population_mean - t_crit * standard_error
+ci_max <- population_mean + t_crit * standard_error
+```
+
+## Table of coefficients to calculate the 95% C.I.
+
+```{r CI table}
+
+confidence <- 0.95
+confidence_onesided <- 1- (1-confidence)/2
+
+
+se_mult_factor <- function(N) qt(confidence_onesided, df=N-1)
+sd_mult_factor <- function(N) se_mult_factor(N)/sqrt(N)
+
+n_array <- c(2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 50, 100, 1000)
+se_mult_factor_array <- sapply(n_array, se_mult_factor)
+sd_mult_factor_array <- sapply(n_array, sd_mult_factor)
+
+
+table_df <- data.frame(
+  SampleSize = n_array,
+  SE_Multiplier =  se_mult_factor_array,
+  SD_Multiplier = sd_mult_factor_array
+)
+
+knitr::kable(table_df, col.names = c("Sample Size", "t(97.5%)", "Multiplier for the SD"))
+```
+
+## Table of coefficients for the C.I. of the SD
+```{r CI table SD}
+
+confidence <- 0.95
+
+alpha <- 1-confidence
+lower_limit <- function(N) sqrt((N-1) / qchisq(1-(alpha/2), df = N-1))
+upper_limit <- function(N) sqrt((N-1) / qchisq(alpha/2, df = N-1))
+
+n_array <- c(2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 50, 100, 1000)
+lower_limit_array <- sapply(n_array, lower_limit)
+upper_limit_array <- sapply(n_array, upper_limit)
+
+
+table_df <- data.frame(
+  SampleSize = n_array,
+  LL =  lower_limit_array,
+  UL = upper_limit_array
+)
+
+knitr::kable(table_df, col.names = c("Sample Size", "Lower limit multiplier", "Upper limit multiplier"))
+```
+
+## Bland Altman with confidence intervals
+
+```{r BA with CI}
+# Function to create Bland-Altman plot with CI adjustments for sample size using ggplot2
+bland_altman_with_ci <- function(method1, method2, alpha = 0.05) {
+  # Calculate differences and means
+  differences <- method1 - method2
+  means <- (method1 + method2) / 2
+  n <- length(differences)
+  
+  # Mean difference (bias)
+  mean_diff <- mean(differences)
+  
+  # Standard deviation of differences
+  sd_diff <- sd(differences)
+  
+  # Standard error of the mean difference
+  se_mean <- sd_diff / sqrt(n)
+  
+  # t-critical value for the given alpha and df
+  t_crit <- qt(1 - alpha/2, df = n - 1)
+  
+  # Confidence interval for the mean difference
+  mean_ci_lower <- mean_diff - t_crit * se_mean
+  mean_ci_upper <- mean_diff + t_crit * se_mean
+  
+  # Standard limits of agreement
+  lower_loa <- mean_diff - 1.96 * sd_diff
+  upper_loa <- mean_diff + 1.96 * sd_diff
+  
+  # Standard error of the limits of agreement
+  # Formula from Bland & Altman (1999): se_limits = sqrt((3*sd_diff^2)/n)
+  se_limits <- sqrt((3 * sd_diff^2) / n)
+  
+  # Confidence intervals for the limits of agreement
+  lower_loa_ci_lower <- lower_loa - t_crit * se_limits
+  lower_loa_ci_upper <- lower_loa + t_crit * se_limits
+  upper_loa_ci_lower <- upper_loa - t_crit * se_limits
+  upper_loa_ci_upper <- upper_loa + t_crit * se_limits
+  
+  # Create a data frame for plotting
+  plot_data <- data.frame(means = means, differences = differences)
+  
+  # Find the maximum absolute value for symmetric y-axis limits
+  y_limit <- max(abs(c(
+    lower_loa_ci_lower, upper_loa_ci_upper,
+    min(differences), max(differences)
+  ))) * 1.1  # Add 10% padding
+  
+  # Create the plot with ggplot2
+  p <- ggplot(plot_data, aes(x = means, y = differences)) +
+    geom_point(size = 2, alpha = 0.7) +
+    geom_hline(yintercept = 0, linetype = "solid", color = "gray50") +
+    geom_hline(yintercept = mean_diff, linetype = "solid", color = "blue", linewidth = 1) +
+    geom_hline(yintercept = lower_loa, linetype = "dashed", color = "red", linewidth = 0.8) +
+    geom_hline(yintercept = upper_loa, linetype = "dashed", color = "red", linewidth = 0.8) +
+    # Add confidence intervals for the mean difference
+    geom_hline(yintercept = mean_ci_lower, linetype = "dotted", color = "blue", linewidth = 0.8) +
+    geom_hline(yintercept = mean_ci_upper, linetype = "dotted", color = "blue", linewidth = 0.8) +
+    # Add confidence intervals for the limits of agreement
+    geom_hline(yintercept = lower_loa_ci_lower, linetype = "dotted", color = "red", linewidth = 0.8) +
+    geom_hline(yintercept = lower_loa_ci_upper, linetype = "dotted", color = "red", linewidth = 0.8) +
+    geom_hline(yintercept = upper_loa_ci_lower, linetype = "dotted", color = "red", linewidth = 0.8) +
+    geom_hline(yintercept = upper_loa_ci_upper, linetype = "dotted", color = "red", linewidth = 0.8) +
+    # Labels and title
+    labs(
+      title = paste0("Bland-Altman Plot (n = ", n, ")"),
+      subtitle = "With 95% Confidence Intervals",
+      x = "Mean of Methods",
+      y = "Difference (Method 1 - Method 2)"
+    ) +
+    # Set symmetric y-axis limits
+    ylim(-y_limit, y_limit) +
+    # Add a legend
+    annotate("text", x = max(means), y = mean_diff, 
+             label = paste("Mean =", round(mean_diff, 2)), 
+             hjust = 1, vjust = -0.5, color = "blue") +
+    annotate("text", x = max(means), y = upper_loa, 
+             label = paste("Upper LoA =", round(upper_loa, 2)), 
+             hjust = 1, vjust = -0.5, color = "red") +
+    annotate("text", x = max(means), y = lower_loa, 
+             label = paste("Lower LoA =", round(lower_loa, 2)), 
+             hjust = 1, vjust = 1.5, color = "red") +
+    # Theme adjustments
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+  
+  # Add custom legend
+  p <- p + 
+    annotate("segment", x = min(means), y = -y_limit*0.9, xend = min(means) + (max(means)-min(means))*0.05, 
+             yend = -y_limit*0.9, color = "blue", linewidth = 1) +
+    annotate("text", x = min(means) + (max(means)-min(means))*0.06, y = -y_limit*0.9, 
+             label = "Mean difference", hjust = 0) +
+    
+    annotate("segment", x = min(means) + (max(means)-min(means))*0.25, y = -y_limit*0.9, 
+             xend = min(means) + (max(means)-min(means))*0.3, yend = -y_limit*0.9, 
+             color = "blue", linetype = "dotted", linewidth = 0.8) +
+    annotate("text", x = min(means) + (max(means)-min(means))*0.31, y = -y_limit*0.9, 
+             label = "Mean difference 95% CI", hjust = 0) +
+    
+    annotate("segment", x = min(means) + (max(means)-min(means))*0.6, y = -y_limit*0.9, 
+             xend = min(means) + (max(means)-min(means))*0.65, yend = -y_limit*0.9, 
+             color = "red", linetype = "dashed", linewidth = 0.8) +
+    annotate("text", x = min(means) + (max(means)-min(means))*0.66, y = -y_limit*0.9, 
+             label = "Limits of agreement", hjust = 0) +
+    
+    annotate("segment", x = min(means), y = -y_limit*0.8, 
+             xend = min(means) + (max(means)-min(means))*0.05, yend = -y_limit*0.8, 
+             color = "red", linetype = "dotted", linewidth = 0.8) +
+    annotate("text", x = min(means) + (max(means)-min(means))*0.06, y = -y_limit*0.8, 
+             label = "Limits of agreement 95% CI", hjust = 0)
+  
+  # Print a summary of the results
+  cat("Sample size:", n, "\n")
+  cat("Mean difference:", round(mean_diff, 2), "with 95% CI [", 
+      round(mean_ci_lower, 2), ",", round(mean_ci_upper, 2), "]\n")
+  cat("Limits of agreement:\n")
+  cat("  Lower:", round(lower_loa, 2), "with 95% CI [", 
+      round(lower_loa_ci_lower, 2), ",", round(lower_loa_ci_upper, 2), "]\n")
+  cat("  Upper:", round(upper_loa, 2), "with 95% CI [", 
+      round(upper_loa_ci_lower, 2), ",", round(upper_loa_ci_upper, 2), "]\n")
+  
+  # Return both the plot and the numeric results
+  return(list(
+    plot = p,
+    results = list(
+      n = n,
+      mean_diff = mean_diff,
+      sd_diff = sd_diff,
+      mean_ci_lower = mean_ci_lower,
+      mean_ci_upper = mean_ci_upper,
+      lower_loa = lower_loa,
+      upper_loa = upper_loa,
+      lower_loa_ci_lower = lower_loa_ci_lower,
+      lower_loa_ci_upper = lower_loa_ci_upper,
+      upper_loa_ci_lower = upper_loa_ci_lower,
+      upper_loa_ci_upper = upper_loa_ci_upper
+    )
+  ))
+}
+
+# Function to run simulation with different sample sizes
+simulate_ba_plots <- function(n) {
+  set.seed(123)  # For reproducibility
+  
+  # True values with some random error
+  true_values <- rnorm(n, mean = 100, sd = 15)
+  
+  # Method 1: introduces a systematic bias and random error
+  method1 <- true_values + rnorm(n, mean = 5, sd = 8)
+  
+  # Method 2: introduces only random error
+  method2 <- true_values + rnorm(n, mean = 0, sd = 8)
+  
+  # Create Bland-Altman plot with CI
+  result <- bland_altman_with_ci(method1, method2)
+  result$plot
+}
+
+simulate_ba_plots(5)
+simulate_ba_plots(10)
+simulate_ba_plots(20)
+simulate_ba_plots(50)
+```
+
+## Plot of a normal distribution and distribution of differences
+
+```{r normdist}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Parameters
+n_samples <- 10000  # Number of samples to generate
+mean_val <- 0       # Mean of the normal distribution
+sd_val <- 1         # Standard deviation of the normal distribution
+
+# Generate samples from normal distribution
+samples <- rnorm(n_samples, mean = mean_val, sd = sd_val)
+
+# Generate another set of samples
+samples2 <- rnorm(n_samples, mean = mean_val, sd = sd_val)
+
+# Calculate differences between random pairs of samples
+differences <- samples - samples2
+
+# Create a data frame for plotting
+plot_data <- data.frame(
+  value = c(samples, differences),
+  type = factor(c(rep("Original Samples", n_samples), 
+                  rep("Differences", n_samples)),
+                levels = c("Original Samples", "Differences"))
+)
+
+# Calculate theoretical values for plotting the normal distribution curves
+x_range <- seq(min(plot_data$value), max(plot_data$value), length.out = 1000)
+original_density <- dnorm(x_range, mean = mean_val, sd = sd_val)
+diff_density <- dnorm(x_range, mean = 0, sd = sqrt(2)*sd_val)
+
+curve_data <- data.frame(
+  x = c(x_range, x_range),
+  y = c(original_density, diff_density),
+  type = factor(c(rep("Original Samples", 1000), 
+                  rep("Differences", 1000)),
+                levels = c("Original Samples", "Differences"))
+)
+
+# Calculate statistics for display
+orig_mean <- mean(samples)
+orig_sd <- sd(samples)
+diff_mean <- mean(differences)
+diff_sd <- sd(differences)
+
+
+# Create the plot
+p <- ggplot() +
+  # Add histograms (normalized to form density)
+  geom_histogram(data = plot_data, 
+                 aes(x = value, fill = type, color = type),
+                 alpha = 0.5, position = "identity",
+                 binwidth = 0.2) +
+  
+  # Add theoretical density curves
+  geom_line(data = curve_data,
+            aes(x = x, y = y, color = type),
+            size = 1) +
+  
+  # Customize colors
+  scale_fill_manual(values = c("steelblue", "firebrick")) +
+  scale_color_manual(values = c("steelblue4", "firebrick4")) +
+  
+  
+  labs(
+    title = "Comparison of Normal Distribution and Differences Distribution",
+    subtitle = paste("Original: N(", mean_val, ",", sd_val, "), Differences: N(0, 2*", sd_val, ")"),
+    x = "Value",
+    y = "Density",
+    fill = "Distribution",
+    color = "Theoretical Density"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+p
+```
